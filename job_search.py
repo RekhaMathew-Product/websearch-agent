@@ -303,10 +303,10 @@ def main():
         print(f"  Scoring: {job['title']} @ {job['company']}")
         score, reason = score_job(job)
         print(f"  📊 Score: {score}/10 — {reason}")
-        save_to_notion(job, score, reason)
+        save_to_notion(job, score, reason)  # save ALL jobs regardless of score
 
         if score >= ALERT_THRESHOLD:
-            high_scoring_jobs.append((job, score, reason))
+            high_scoring_jobs.append((job, score, reason))  # email alert only for high scores
 
     # Step 4: Send alert if strong matches found
     print(f"\n📧 {len(high_scoring_jobs)} jobs scored {ALERT_THRESHOLD}+/10")
