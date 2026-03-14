@@ -213,7 +213,7 @@ def save_to_notion(job, score, reason):
             "Match Reason": {
                 "rich_text": [{"text": {"content": reason}}]
             },
-            "Apply Link": {
+            "URL": {
                 "url": job["url"] if job["url"] else None
             },
             "Date Found": {
@@ -302,6 +302,7 @@ def main():
     for job in jobs:
         print(f"  Scoring: {job['title']} @ {job['company']}")
         score, reason = score_job(job)
+        print(f"  📊 Score: {score}/10 — {reason}")
         save_to_notion(job, score, reason)
 
         if score >= ALERT_THRESHOLD:
