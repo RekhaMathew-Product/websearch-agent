@@ -17,15 +17,31 @@ JOB_TITLES = [
     "Programme Manager"
 ]
 
-LOCATIONS = ["London", "Remote UK"]
+# Target companies only — agent will search each title at each company
+TARGET_COMPANIES = [
+    "Fitbit",
+    "Google Pixel Watch",
+    "YouTube Health",
+    "Google Health",
+    "Strava",
+    "Zoe",
+    "FitXR",
+    "WHOOP",
+    "Holland & Barrett"
+]
 
-INDUSTRIES = ["Health", "Fitness", "Wellness", "Healthcare", "MedTech"]
+# Used by Claude to filter out irrelevant results
+COMPANY_NAMES_FOR_FILTER = [
+    "Fitbit", "Pixel Watch", "YouTube Health", "Google Health",
+    "Health Connect", "Strava", "Zoe", "FitXR", "WHOOP", "Holland & Barrett"
+]
 
 ALERT_THRESHOLD = 7  # email alert if score >= this
 
 CANDIDATE_PROFILE = """
 Senior Project/Product/Programme Manager with experience in tech-enabled products and services.
-Looking for roles in the Health, Fitness and Wellness industry.
+Looking for roles specifically at health & fitness tech companies including:
+Fitbit, Google Health, YouTube Health, Pixel Watch, Strava, Zoe, FitXR, WHOOP, Holland & Barrett.
 Preferred locations: London or Remote UK.
 Values: impact-driven work, modern tech stack, collaborative culture.
 Seniority: mid to senior level (5+ years experience).
@@ -49,13 +65,22 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 # STEP 1: SEARCH FOR JOBS VIA SERPAPI
 # ─────────────────────────────────────────────
 
+def is_target_company(company_name):
+    """Check if the job is from one of our target companies."""
+    company_lower = company_name.lower()
+    for target in COMPANY_NAMES_FOR_FILTER:
+        if target.lower() in company_lower:
+            return True
+    return False
+
+
 def search_jobs():
     all_jobs = []
-    seen_titles = set()
+    seen_keys = set()
 
     for title in JOB_TITLES:
-        for location in LOCATIONS:
-            query = f"{title} {' OR '.join(INDUSTRIES)} {location}"
+        for company in TARGET_COMPANIES:
+            query = f"{title} at {company} UK"
             print(f"🔍 Searching: {query}")
 
             params = {
@@ -72,24 +97,33 @@ def search_jobs():
                 jobs = data.get("jobs_results", [])
 
                 for job in jobs:
-                    # deduplicate by title + company
-                    key = f"{job.get('title', '')}_{job.get('company_name', '')}"
-                    if key not in seen_titles:
-                        seen_titles.add(key)
-                        all_jobs.append({
-                            "title": job.get("title", ""),
-                            "company": job.get("company_name", ""),
-                            "location": job.get("location", ""),
-                            "description": job.get("description", "")[:1000],
-                            "salary": extract_salary(job),
-                            "url": extract_url(job),
-                            "date_found": datetime.today().strftime("%Y-%m-%d")
-                        })
+                    company_name = job.get("company_name", "")
+
+                    # Only include jobs from our target companies
+                    if not is_target_company(company_name):
+                        print(f"  ⏭️ Skipping {company_name} — not a target company")
+                        continue
+
+                    # Deduplicate by title + company
+                    key = f"{job.get('title', '')}_{company_name}"
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+
+                    all_jobs.append({
+                        "title": job.get("title", ""),
+                        "company": company_name,
+                        "location": job.get("location", ""),
+                        "description": job.get("description", "")[:1000],
+                        "salary": extract_salary(job),
+                        "url": extract_url(job),
+                        "date_found": datetime.today().strftime("%Y-%m-%d")
+                    })
 
             except Exception as e:
                 print(f"⚠️ SerpAPI error for '{query}': {e}")
 
-    print(f"✅ Found {len(all_jobs)} unique jobs")
+    print(f"✅ Found {len(all_jobs)} matching jobs from target companies")
     return all_jobs
 
 
