@@ -8,7 +8,7 @@ from email.mime.multipart import MIMEMultipart
 import anthropic
 
 # ─────────────────────────────────────────────
-# CONFIGURATION — edit these to customise
+# CONFIGURATION
 # ─────────────────────────────────────────────
 
 JOB_TITLES = [
@@ -17,7 +17,6 @@ JOB_TITLES = [
     "Programme Manager"
 ]
 
-# Target companies only — agent will search each title at each company
 TARGET_COMPANIES = [
     "Fitbit",
     "Google Pixel Watch",
@@ -30,7 +29,6 @@ TARGET_COMPANIES = [
     "Holland & Barrett"
 ]
 
-# Used by Claude to filter out irrelevant results
 COMPANY_NAMES_FOR_FILTER = [
     "Fitbit", "Pixel Watch", "YouTube Health", "Google Health",
     "Health Connect", "Strava", "Zoe", "FitXR", "WHOOP", "Holland & Barrett"
@@ -48,25 +46,23 @@ Seniority: mid to senior level (5+ years experience).
 """
 
 # ─────────────────────────────────────────────
-# SECRETS — loaded from environment variables
-# (set these in GitHub Actions secrets)
+# SECRETS — loaded from GitHub Actions secrets
 # ─────────────────────────────────────────────
 
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY")
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
-ALERT_EMAIL = os.environ.get("ALERT_EMAIL")  # where to send alerts (can be same as gmail)
+ALERT_EMAIL = os.environ.get("ALERT_EMAIL")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
 
 # ─────────────────────────────────────────────
-# STEP 1: SEARCH FOR JOBS VIA SERPAPI
+# STEP 1: SEARCH FOR JOBS (LAST 24 HOURS ONLY)
 # ─────────────────────────────────────────────
 
 def is_target_company(company_name):
-    """Check if the job is from one of our target companies."""
     company_lower = company_name.lower()
     for target in COMPANY_NAMES_FOR_FILTER:
         if target.lower() in company_lower:
@@ -74,9 +70,36 @@ def is_target_company(company_name):
     return False
 
 
+def is_within_24_hours(job):
+    extensions = job.get("detected_extensions", {})
+    posted_at = extensions.get("posted_at", "").lower()
+
+    if not posted_at:
+        return True
+
+    recent_indicators = [
+        "just now", "minute ago", "minutes ago",
+        "hour ago", "hours ago", "today", "1 day ago"
+    ]
+    for indicator in recent_indicators:
+        if indicator in posted_at:
+            return True
+
+    older_indicators = [
+        "days ago", "week ago", "weeks ago",
+        "month ago", "months ago"
+    ]
+    for indicator in older_indicators:
+        if indicator in posted_at:
+            return False
+
+    return True
+
+
 def search_jobs():
     all_jobs = []
     seen_keys = set()
+    skipped_old = 0
 
     for title in JOB_TITLES:
         for company in TARGET_COMPANIES:
@@ -88,7 +111,8 @@ def search_jobs():
                 "q": query,
                 "location": "United Kingdom",
                 "api_key": SERPAPI_KEY,
-                "num": 10
+                "num": 10,
+                "chips": "date_posted:today"
             }
 
             try:
@@ -99,31 +123,38 @@ def search_jobs():
                 for job in jobs:
                     company_name = job.get("company_name", "")
 
-                    # Only include jobs from our target companies
                     if not is_target_company(company_name):
                         print(f"  ⏭️ Skipping {company_name} — not a target company")
                         continue
 
-                    # Deduplicate by title + company
+                    if not is_within_24_hours(job):
+                        posted = job.get("detected_extensions", {}).get("posted_at", "unknown")
+                        print(f"  ⏭️ Skipping old job: {job.get('title')} @ {company_name} — posted {posted}")
+                        skipped_old += 1
+                        continue
+
                     key = f"{job.get('title', '')}_{company_name}"
                     if key in seen_keys:
                         continue
                     seen_keys.add(key)
 
+                    posted_at = job.get("detected_extensions", {}).get("posted_at", "Unknown")
+
                     all_jobs.append({
                         "title": job.get("title", ""),
                         "company": company_name,
                         "location": job.get("location", ""),
-                        "description": job.get("description", "")[:1000],
+                        "description": job.get("description", "")[:2000],
                         "salary": extract_salary(job),
                         "url": extract_url(job),
-                        "date_found": datetime.today().strftime("%Y-%m-%d")
+                        "date_found": datetime.today().strftime("%Y-%m-%d"),
+                        "posted_at": posted_at
                     })
 
             except Exception as e:
                 print(f"⚠️ SerpAPI error for '{query}': {e}")
 
-    print(f"✅ Found {len(all_jobs)} matching jobs from target companies")
+    print(f"✅ Found {len(all_jobs)} new jobs in last 24hrs ({skipped_old} older jobs skipped)")
     return all_jobs
 
 
@@ -236,16 +267,16 @@ def save_to_notion(job, score, reason):
 
 
 # ─────────────────────────────────────────────
-# STEP 4: SEND EMAIL ALERT FOR STRONG MATCHES
+# STEP 4: SEND EMAIL ALERT (7+ scores)
 # ─────────────────────────────────────────────
 
 def send_alert_email(high_scoring_jobs):
     if not high_scoring_jobs:
         return
 
-    subject = f"🎯 {len(high_scoring_jobs)} Strong Job Match(es) Found — {datetime.today().strftime('%d %b %Y')}"
+    subject = f"🎯 {len(high_scoring_jobs)} Strong Job Match(es) — {datetime.today().strftime('%d %b %Y')}"
 
-    body = f"Hi,\n\nYour daily job search found {len(high_scoring_jobs)} strong match(es) today:\n\n"
+    body = f"Hi Rekha,\n\nYour daily job search found {len(high_scoring_jobs)} strong match(es) today:\n\n"
     body += "─" * 50 + "\n\n"
 
     for item in high_scoring_jobs:
@@ -254,6 +285,7 @@ def send_alert_email(high_scoring_jobs):
         body += f"   Company:  {job['company']}\n"
         body += f"   Location: {job['location']}\n"
         body += f"   Salary:   {job['salary']}\n"
+        body += f"   Posted:   {job.get('posted_at', 'Unknown')}\n"
         body += f"   Score:    {score}/10\n"
         body += f"   Why:      {reason}\n"
         if job['url']:
@@ -261,8 +293,7 @@ def send_alert_email(high_scoring_jobs):
         body += "\n"
 
     body += "─" * 50 + "\n"
-    body += "All results have been saved to your Notion database.\n"
-    body += "\nGood luck! 🚀"
+    body += "All results saved to your Notion database.\n\nGood luck! 🚀"
 
     msg = MIMEMultipart()
     msg["From"] = GMAIL_ADDRESS
@@ -280,7 +311,7 @@ def send_alert_email(high_scoring_jobs):
 
 
 # ─────────────────────────────────────────────
-# MAIN — runs everything in sequence
+# MAIN
 # ─────────────────────────────────────────────
 
 def main():
@@ -288,27 +319,24 @@ def main():
     print(f"🤖 Job Search Agent — {datetime.today().strftime('%d %b %Y')}")
     print(f"{'='*50}\n")
 
-    # Step 1: Search
     jobs = search_jobs()
 
     if not jobs:
-        print("No jobs found today.")
+        print("No new jobs found in the last 24 hours.")
         return
 
-    # Step 2 & 3: Score each job and save to Notion
     high_scoring_jobs = []
     print(f"\n📊 Scoring and saving {len(jobs)} jobs...\n")
 
     for job in jobs:
-        print(f"  Scoring: {job['title']} @ {job['company']}")
+        print(f"  Scoring: {job['title']} @ {job['company']} (posted: {job.get('posted_at', 'unknown')})")
         score, reason = score_job(job)
         print(f"  📊 Score: {score}/10 — {reason}")
-        save_to_notion(job, score, reason)  # save ALL jobs regardless of score
+        save_to_notion(job, score, reason)
 
         if score >= ALERT_THRESHOLD:
-            high_scoring_jobs.append((job, score, reason))  # email alert only for high scores
+            high_scoring_jobs.append((job, score, reason))
 
-    # Step 4: Send alert if strong matches found
     print(f"\n📧 {len(high_scoring_jobs)} jobs scored {ALERT_THRESHOLD}+/10")
     send_alert_email(high_scoring_jobs)
 
